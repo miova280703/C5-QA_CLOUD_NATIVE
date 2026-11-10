@@ -1,22 +1,3 @@
-# ============================================================
-# azure-pipelines.yml — Pipeline de Azure DevOps para la app Tienda
-# ------------------------------------------------------------
-# Es el equivalente en Azure del buildspec.yml de AWS (Dia 2).
-# Mismo concepto: un archivo YAML versionado junto al codigo que
-# describe las etapas del CI/CD. Cambia la sintaxis y la consola,
-# no la idea.
-#
-# Este pipeline:
-#   1) BUILD   : instala Node y dependencias, genera datos con Faker
-#   2) SMOKE   : arranca la app y corre el smoke test de la API
-#   3) CARGA   : corre la prueba de carga y valida el SLA (quality gate)
-#
-# Para usarlo en Azure DevOps:
-#   - Sube este repo a Azure Repos o GitHub.
-#   - En Azure DevOps: Pipelines > New pipeline > elige tu repo >
-#     "Existing Azure Pipelines YAML file" > /azure-pipelines.yml.
-# ============================================================
-
 # Se ejecuta en cada push a la rama main
 trigger:
   branches:
@@ -31,7 +12,7 @@ pool:
 variables:
   NODE_VERSION: '20.x'
   APP_DIR: 'app-tienda'      # carpeta de la app
-  TEST_DIR: 'dia3/proyecto/tienda-azure'  # carpeta de las pruebas
+  TEST_DIR: 'pipeline'  # carpeta de las pruebas
   BASE_URL: 'http://localhost:3000'
 
 stages:

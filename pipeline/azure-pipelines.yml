@@ -1,24 +1,51 @@
-# Se ejecuta en cada push a la rama main
+# ============================================================
+# Reto Modulo 5 - Fase 2: Pipeline CI/CD con quality gates
+# Ubicacion en el repo: pipeline/azure-pipelines.yml
+#
+#   Build -> SmokeTests -> LoadTest -> Deploy
+#
+# GATES (si fallan, los stages siguientes NO corren):
+#   GATE 1: paso "Smoke test de la API"  (stage SmokeTests)
+#   GATE 2: paso "Prueba de carga"       (stage LoadTest, exit 1 si SLA no se cumple)
+#
+# DEMO ROJO/VERDE: al pulsar "Run pipeline" cambia el parametro slaP95Ms:
+#   1    -> imposible de cumplir -> LoadTest ROJO -> Deploy se omite
+#   800  -> SLA real             -> todo VERDE   -> Deploy corre
+#
+# IMPORTANTE: la app y el test corren en el MISMO paso. Los procesos en
+# segundo plano mueren al terminar un paso y los stages no comparten maquina.
+# ============================================================
+ 
 trigger:
   branches:
     include:
+      - master
       - main
-
-# Agente hospedado por Azure (maquina Linux con herramientas preinstaladas)
+ 
+pr: none
+ 
+parameters:
+  - name: slaP95Ms
+    displayName: 'SLA p95 en ms (800 = verde, 1 = forzar rojo)'
+    type: string
+    default: '800'
+  - name: slaErrorPct
+    displayName: 'SLA tasa de error en % (1 = verde)'
+    type: string
+    default: '1'
+ 
 pool:
   vmImage: 'ubuntu-latest'
-
-# Variables reutilizables en todo el pipeline
+ 
 variables:
   NODE_VERSION: '20.x'
-  APP_DIR: 'app-tienda'      # carpeta de la app
-  TEST_DIR: 'pipeline'  # carpeta de las pruebas
-  BASE_URL: 'http://localhost:3000'
-
+  APP_DIR: 'app-tienda'
+  TEST_DIR: 'pipeline/tests'
+ 
 stages:
   # ──────────────────────────────────────────────────────────
   - stage: Build
-    displayName: 'Build — instalar y generar datos'
+    displayName: 'Build - instalar y generar datos'
     jobs:
       - job: build
         displayName: 'Preparar la app'
@@ -27,47 +54,48 @@ stages:
             displayName: 'Usar Node $(NODE_VERSION)'
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
+ 
           - script: npm install
-            displayName: 'npm install (genera datos con Faker en postinstall)'
-            workingDirectory: '$(APP_DIR)'
-
+            displayName: 'npm install (postinstall genera db.json con Faker)'
+            workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
+ 
+          - script: |
+              node -e "const d=require('./datos/db.json'); const c=new Set(d.productos.map(p=>p.categoria)); console.log('productos:',d.productos.length,'| categorias:',c.size); if(d.productos.length<20||c.size<4){console.error('Datos insuficientes (min 20 productos y 4 categorias)');process.exit(1)}"
+            displayName: 'Validar datos generados (>=20 productos, >=4 categorias)'
+            workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
+ 
   # ──────────────────────────────────────────────────────────
   - stage: SmokeTests
-    displayName: 'Smoke — la app responde tras desplegar'
+    displayName: 'Smoke - la app encendio (GATE 1)'
     dependsOn: Build
     jobs:
       - job: smoke
-        displayName: 'Arrancar app y correr smoke test'
+        displayName: 'Arrancar app y correr smoke'
         steps:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
-          - script: npm install
-            displayName: 'Instalar dependencias de la app'
-            workingDirectory: '$(APP_DIR)'
-
-          # Arranca la app en segundo plano (& la deja corriendo)
+ 
           - script: |
-              node servidor/server.js &
-              echo "Esperando a que la app responda..."
-              for i in $(seq 1 15); do
-                if curl -sf http://localhost:3000/api/health > /dev/null; then
-                  echo "App lista"; break
-                fi
-                sleep 2
+              set -e
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              npm install
+              nohup node servidor/server.js </dev/null > "$(Build.SourcesDirectory)/app.log" 2>&1 &
+              OK=0
+              for i in $(seq 1 20); do
+                curl -sf http://localhost:3000/api/health > /dev/null && { OK=1; echo ">>> APP LISTA"; break; }
+                sleep 1
               done
-            displayName: 'Arrancar la app en background'
-            workingDirectory: '$(APP_DIR)'
-
-          - script: BASE_URL=$(BASE_URL) node tests/smoke-api.js
-            displayName: 'Smoke test de la API'
-            workingDirectory: '$(TEST_DIR)'
-
+              if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
+ 
+              cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
+              # health + catalogo + producto + 404 + filtro + front + crear pedido
+              BASE_URL=http://localhost:3000 node smoke-api.js
+            displayName: 'Smoke test de la API (GATE 1)'
+ 
   # ──────────────────────────────────────────────────────────
   - stage: LoadTest
-    displayName: 'Carga — quality gate de rendimiento'
+    displayName: 'Carga - quality gate de rendimiento (GATE 2)'
     dependsOn: SmokeTests
     jobs:
       - job: carga
@@ -76,21 +104,40 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
-          - script: npm install
-            workingDirectory: '$(APP_DIR)'
-
+ 
           - script: |
-              node servidor/server.js &
-              for i in $(seq 1 15); do
-                if curl -sf http://localhost:3000/api/health > /dev/null; then break; fi
-                sleep 2
+              set -e
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              npm install
+              nohup node servidor/server.js </dev/null > "$(Build.SourcesDirectory)/app.log" 2>&1 &
+              OK=0
+              for i in $(seq 1 20); do
+                curl -sf http://localhost:3000/api/health > /dev/null && { OK=1; echo ">>> APP LISTA"; break; }
+                sleep 1
               done
-            displayName: 'Arrancar la app en background'
-            workingDirectory: '$(APP_DIR)'
-
-          # Si el SLA no se cumple, este script sale con codigo 1
-          # y el pipeline marca la etapa en rojo (quality gate).
-          - script: BASE_URL=$(BASE_URL) CONCURRENCIA=15 DURACION_S=8 node tests/carga-simple.js
-            displayName: 'Prueba de carga (falla si no cumple el SLA)'
-            workingDirectory: '$(TEST_DIR)'
+              if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
+ 
+              cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
+              echo "SLA aplicado: p95 < ${SLA_P95_MS} ms y error < ${SLA_ERROR_PCT}%"
+              # carga-simple.js sale con exit 1 si no cumple el SLA -> este paso queda ROJO
+              BASE_URL=http://localhost:3000 CONCURRENCIA=15 DURACION_S=8 node carga-simple.js
+            displayName: 'Prueba de carga (GATE 2: exit 1 si no cumple el SLA)'
+            env:
+              SLA_P95_MS: '${{ parameters.slaP95Ms }}'
+              SLA_ERROR_PCT: '${{ parameters.slaErrorPct }}'
+ 
+  # ──────────────────────────────────────────────────────────
+  # Solo corre si TODOS los gates anteriores pasaron.
+  # En la Fase 5 aqui se publica la imagen en ACR.
+  - stage: Deploy
+    displayName: 'Deploy (solo si los gates pasan)'
+    dependsOn: LoadTest
+    condition: succeeded()
+    jobs:
+      - job: deploy
+        displayName: 'Desplegar'
+        steps:
+          - script: |
+              echo "Gates en verde: Smoke OK y Carga OK."
+              echo "Aqui iria el despliegue (Fase 5: docker push a ACR / App Service)."
+            displayName: 'Deploy (placeholder)'

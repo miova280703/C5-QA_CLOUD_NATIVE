@@ -2,11 +2,13 @@
 # Reto Modulo 5 - Fase 2: Pipeline CI/CD con quality gates
 # Ubicacion en el repo: pipeline/azure-pipelines.yml
 #
-#   Build -> SmokeTests -> LoadTest -> Deploy
+#   Build -> SmokeTests -> LoadTest ----\
+#                      \-> E2E ----------+-> Deploy
 #
-# GATES (si fallan, los stages siguientes NO corren):
+# GATES (si fallan, Deploy NO corre):
 #   GATE 1: paso "Smoke test de la API"  (stage SmokeTests)
 #   GATE 2: paso "Prueba de carga"       (stage LoadTest, exit 1 si SLA no se cumple)
+#   GATE 3: paso "E2E: app + pytest"     (stage E2E, Playwright + Screenplay + BDD)
 #
 # DEMO ROJO/VERDE: al pulsar "Run pipeline" cambia el parametro slaP95Ms:
 #   1    -> imposible de cumplir -> LoadTest ROJO -> Deploy se omite
@@ -15,15 +17,15 @@
 # IMPORTANTE: la app y el test corren en el MISMO paso. Los procesos en
 # segundo plano mueren al terminar un paso y los stages no comparten maquina.
 # ============================================================
- 
+
 trigger:
   branches:
     include:
       - master
       - main
- 
+
 pr: none
- 
+
 parameters:
   - name: slaP95Ms
     displayName: 'SLA p95 en ms (800 = verde, 1 = forzar rojo)'
@@ -33,15 +35,22 @@ parameters:
     displayName: 'SLA tasa de error en % (1 = verde)'
     type: string
     default: '1'
- 
+
 pool:
   vmImage: 'ubuntu-latest'
- 
+
 variables:
   NODE_VERSION: '20.x'
+  PYTHON_VERSION: '3.11'
   APP_DIR: 'app-tienda'
   TEST_DIR: 'pipeline/tests'
- 
+  E2E_DIR: 'e2e'
+  # Azure Test Plans (ver URL del plan: ...?planId=1&suiteId=3)
+  TEST_PLAN_ID: '1'
+  TEST_SUITE_ID: '3'
+  # El secreto AZURE_DEVOPS_PAT se crea en Pipelines > Edit > Variables
+  # (marcado "Keep this value secret"); NO se escribe aqui.
+
 stages:
   # ──────────────────────────────────────────────────────────
   - stage: Build
@@ -54,16 +63,16 @@ stages:
             displayName: 'Usar Node $(NODE_VERSION)'
             inputs:
               versionSpec: '$(NODE_VERSION)'
- 
+
           - script: npm install
             displayName: 'npm install (postinstall genera db.json con Faker)'
             workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
- 
+
           - script: |
               node -e "const d=require('./datos/db.json'); const c=new Set(d.productos.map(p=>p.categoria)); console.log('productos:',d.productos.length,'| categorias:',c.size); if(d.productos.length<20||c.size<4){console.error('Datos insuficientes (min 20 productos y 4 categorias)');process.exit(1)}"
             displayName: 'Validar datos generados (>=20 productos, >=4 categorias)'
             workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
- 
+
   # ──────────────────────────────────────────────────────────
   - stage: SmokeTests
     displayName: 'Smoke - la app encendio (GATE 1)'
@@ -75,7 +84,7 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
- 
+
           - script: |
               set -e
               cd "$(Build.SourcesDirectory)/$(APP_DIR)"
@@ -87,12 +96,12 @@ stages:
                 sleep 1
               done
               if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
- 
+
               cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
               # health + catalogo + producto + 404 + filtro + front + crear pedido
               BASE_URL=http://localhost:3000 node smoke-api.js
             displayName: 'Smoke test de la API (GATE 1)'
- 
+
   # ──────────────────────────────────────────────────────────
   - stage: LoadTest
     displayName: 'Carga - quality gate de rendimiento (GATE 2)'
@@ -104,7 +113,7 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
- 
+
           - script: |
               set -e
               cd "$(Build.SourcesDirectory)/$(APP_DIR)"
@@ -116,7 +125,7 @@ stages:
                 sleep 1
               done
               if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
- 
+
               cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
               echo "SLA aplicado: p95 < ${SLA_P95_MS} ms y error < ${SLA_ERROR_PCT}%"
               # carga-simple.js sale con exit 1 si no cumple el SLA -> este paso queda ROJO
@@ -125,19 +134,214 @@ stages:
             env:
               SLA_P95_MS: '${{ parameters.slaP95Ms }}'
               SLA_ERROR_PCT: '${{ parameters.slaErrorPct }}'
- 
+
+  # ──────────────────────────────────────────────────────────
+  # E2E corre EN PARALELO con LoadTest (ambos dependen solo de SmokeTests).
+  # Publica JUnit en la pestana Tests y actualiza los Test Cases del plan.
+  - stage: E2E
+    displayName: 'E2E - Playwright + Screenplay + BDD (GATE 3)'
+    dependsOn: SmokeTests
+    jobs:
+      - job: e2e
+        displayName: 'Pruebas E2E (chromium)'
+        timeoutInMinutes: '30'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(PYTHON_VERSION)'
+
+          - script: |
+              set -e
+              cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              python -m playwright install --with-deps chromium
+            displayName: 'Instalar dependencias E2E (pip + chromium)'
+
+          # app + pytest en UN SOLO paso: la app en background muere al
+          # terminar el paso, asi que debe seguir viva mientras corre pytest.
+          - script: |
+              set -e
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              npm install
+              nohup node servidor/server.js </dev/null > "$(Build.SourcesDirectory)/app.log" 2>&1 &
+              OK=0
+              for i in $(seq 1 20); do
+                curl -sf http://localhost:3000/api/health > /dev/null && { OK=1; echo ">>> APP LISTA"; break; }
+                sleep 1
+              done
+              if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
+
+              cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
+              mkdir -p resultados
+              # exit != 0 si algun escenario falla -> este paso queda ROJO (GATE 3)
+              pytest --junitxml=resultados/junit-chromium.xml
+            displayName: 'E2E: app + pytest (GATE 3)'
+            env:
+              BASE_URL: 'http://localhost:3000'
+
+          - task: PublishTestResults@2
+            displayName: 'Publicar resultados JUnit (pestana Tests)'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(E2E_DIR)/resultados/junit-chromium.xml'
+              testRunTitle: 'E2E Tienda - chromium'
+              mergeTestResults: true
+              failTaskOnFailedTests: false
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Guardar resultados como artefacto'
+            condition: always()
+            inputs:
+              targetPath: '$(E2E_DIR)/resultados'
+              artifact: 'resultados-e2e'
+
+          # Marca cada Test Case (por su tag @TC<id>) como Passed/Failed en el plan.
+          # Si falta el PAT, avisa pero NO rompe el pipeline.
+          - script: |
+              cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
+              python tools/publicar_test_plan.py || echo "##[warning]No se pudo actualizar el Test Plan (revisa AZURE_DEVOPS_PAT)"
+            displayName: 'Actualizar Azure Test Plans'
+            condition: always()
+            env:
+              AZURE_DEVOPS_PAT: '$(AZURE_DEVOPS_PAT)'
+              TEST_PLAN_ID: '$(TEST_PLAN_ID)'
+              TEST_SUITE_ID: '$(TEST_SUITE_ID)'
+              JUNIT_PATH: 'resultados/junit-chromium.xml'
+
+  # ──────────────────────────────────────────────────────────
+  # FASE 4: las MISMAS pruebas en un navegador REAL de Sauce Labs.
+  # Solo corre si existen los secretos SAUCE_USERNAME y SAUCE_ACCESS_KEY
+  # (Pipelines > Edit > Variables, marcados como secret). Sin ellos el stage
+  # se OMITE y el resto del pipeline no se ve afectado (demo guiada).
+  # Que cambia vs local: SAUCE=1 + credenciales + tunel (Sauce Connect).
+  # El codigo de las pruebas NO cambia.
+  - stage: E2E_Sauce
+    displayName: 'E2E en la nube - Sauce Labs (via tunel)'
+    dependsOn: SmokeTests
+    condition: and(succeeded(), ne(variables['SAUCE_USERNAME'], ''))
+    jobs:
+      - job: e2e_sauce
+        displayName: 'Pruebas E2E en navegador real (Sauce)'
+        timeoutInMinutes: '30'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(PYTHON_VERSION)'
+
+          # PASO 1: app + tunel Sauce Connect (ambos en background)
+          - script: |
+              echo "##### ARRANCAR APP #####"
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              npm install
+              nohup node servidor/server.js </dev/null > "$(Build.SourcesDirectory)/app.log" 2>&1 &
+              APP_OK=0
+              for i in $(seq 1 20); do
+                curl -sf http://localhost:3000/api/health > /dev/null && { APP_OK=1; echo ">>> APP LISTA"; break; }
+                sleep 1
+              done
+              if [ "$APP_OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
+
+              echo "##### DESCARGAR SAUCE CONNECT #####"
+              cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
+              curl -fsSL -o sc.tar.gz https://saucelabs.com/downloads/sauce-connect/5.2.2/sauce-connect-5.2.2_linux.x86_64.tar.gz
+              mkdir -p sc && tar -xzf sc.tar.gz -C sc
+              SC_BIN=$(find "$PWD/sc" \( -name 'sauce-connect' -o -name 'sc' \) \( -type f -o -type l \) | head -n1)
+              if [ -z "$SC_BIN" ]; then echo "##[error]No encontre el binario de Sauce Connect"; exit 1; fi
+              chmod +x "$SC_BIN"
+              echo "$SC_BIN" > "$(Build.SourcesDirectory)/sc_bin.txt"
+
+              echo "##### ABRIR TUNEL #####"
+              # --proxy-localhost allow: imprescindible. Sin el, el navegador
+              # remoto resuelve 'localhost' como SU propia VM y no ve la app.
+              nohup "$SC_BIN" run \
+                --username "$SAUCE_USERNAME" \
+                --access-key "$SAUCE_ACCESS_KEY" \
+                --region us-west-1 \
+                --tunnel-name "$SAUCE_TUNNEL" \
+                --proxy-localhost allow \
+                --api-address :9000 \
+                </dev/null > "$(Build.SourcesDirectory)/sc.log" 2>&1 &
+              TUNEL_OK=0
+              for i in $(seq 1 90); do
+                if curl -sf http://localhost:9000/readyz > /dev/null 2>&1; then TUNEL_OK=1; echo ">>> TUNEL LISTO"; break; fi
+                sleep 2
+              done
+              echo "----- sc.log -----"; cat "$(Build.SourcesDirectory)/sc.log" 2>/dev/null || true
+              if [ "$TUNEL_OK" != "1" ]; then echo "##[error]El tunel no quedo listo (revisa sc.log arriba)"; exit 1; fi
+            displayName: 'Arrancar app + abrir tunel Sauce Connect'
+            env:
+              SAUCE_USERNAME: $(SAUCE_USERNAME)
+              SAUCE_ACCESS_KEY: $(SAUCE_ACCESS_KEY)
+              SAUCE_TUNNEL: 'tienda-tunnel-$(Build.BuildId)'
+
+          # PASO 2: pytest contra el navegador remoto (app y tunel siguen vivos)
+          - script: |
+              set -e
+              cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              python -m playwright install chromium
+              mkdir -p resultados
+              # --headed: Sauce lo exige para grabar video.
+              pytest --headed --junitxml=resultados/junit-sauce.xml
+            displayName: 'E2E en Sauce Labs (GATE 4: navegador real)'
+            env:
+              SAUCE: '1'
+              SAUCE_USERNAME: $(SAUCE_USERNAME)
+              SAUCE_ACCESS_KEY: $(SAUCE_ACCESS_KEY)
+              SAUCE_REGION: 'us-west-1'
+              SAUCE_BROWSER: 'chrome'
+              SAUCE_PLATFORM: 'Windows 11'
+              SAUCE_TUNNEL: 'tienda-tunnel-$(Build.BuildId)'
+              BASE_URL: 'http://localhost:3000'
+              BUILD_TAG: 'tienda-e2e-$(Build.BuildId)'
+
+          - script: |
+              SC_BIN=$(cat "$(Build.SourcesDirectory)/sc_bin.txt" 2>/dev/null || true)
+              [ -n "$SC_BIN" ] && pkill -f "$SC_BIN" || true
+              echo "Tunel cerrado (si estaba abierto)."
+            displayName: 'Cerrar tunel'
+            condition: always()
+
+          - task: PublishTestResults@2
+            displayName: 'Publicar resultados JUnit (Sauce)'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(E2E_DIR)/resultados/junit-sauce.xml'
+              testRunTitle: 'E2E Tienda - Sauce Labs'
+              failTaskOnFailedTests: false
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Guardar resultados Sauce'
+            condition: always()
+            inputs:
+              targetPath: '$(E2E_DIR)/resultados'
+              artifact: 'resultados-sauce'
+
   # ──────────────────────────────────────────────────────────
   # Solo corre si TODOS los gates anteriores pasaron.
   # En la Fase 5 aqui se publica la imagen en ACR.
   - stage: Deploy
     displayName: 'Deploy (solo si los gates pasan)'
-    dependsOn: LoadTest
+    dependsOn:
+      - LoadTest
+      - E2E
     condition: succeeded()
     jobs:
       - job: deploy
         displayName: 'Desplegar'
         steps:
           - script: |
-              echo "Gates en verde: Smoke OK y Carga OK."
+              echo "Gates en verde: Smoke OK, Carga OK y E2E OK."
               echo "Aqui iria el despliegue (Fase 5: docker push a ACR / App Service)."
             displayName: 'Deploy (placeholder)'

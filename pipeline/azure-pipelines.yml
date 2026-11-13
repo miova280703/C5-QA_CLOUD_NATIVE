@@ -35,6 +35,10 @@ parameters:
     displayName: 'SLA tasa de error en % (1 = verde)'
     type: string
     default: '1'
+  - name: usarSauce
+    displayName: 'Ejecutar tambien en Sauce Labs (requiere SAUCE_USERNAME y SAUCE_ACCESS_KEY)'
+    type: boolean
+    default: false
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -216,15 +220,17 @@ stages:
 
   # ──────────────────────────────────────────────────────────
   # FASE 4: las MISMAS pruebas en un navegador REAL de Sauce Labs.
-  # Solo corre si existen los secretos SAUCE_USERNAME y SAUCE_ACCESS_KEY
-  # (Pipelines > Edit > Variables, marcados como secret). Sin ellos el stage
-  # se OMITE y el resto del pipeline no se ve afectado (demo guiada).
+  # Solo corre si marcas el parametro "usarSauce" al lanzar el pipeline
+  # (Run pipeline) Y existen los secretos SAUCE_USERNAME y SAUCE_ACCESS_KEY
+  # (Pipelines > Edit > Variables, marcados como secret). Si no, el stage se
+  # OMITE y el resto del pipeline no se ve afectado (demo guiada).
+  # (No se usa el secreto en la condicion: Azure no evalua secretos ahi.)
   # Que cambia vs local: SAUCE=1 + credenciales + tunel (Sauce Connect).
   # El codigo de las pruebas NO cambia.
   - stage: E2E_Sauce
     displayName: 'E2E en la nube - Sauce Labs (via tunel)'
     dependsOn: SmokeTests
-    condition: and(succeeded(), ne(variables['SAUCE_USERNAME'], ''))
+    condition: and(succeeded(), eq('${{ parameters.usarSauce }}', 'true'))
     jobs:
       - job: e2e_sauce
         displayName: 'Pruebas E2E en navegador real (Sauce)'

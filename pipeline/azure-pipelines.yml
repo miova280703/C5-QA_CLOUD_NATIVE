@@ -17,15 +17,15 @@
 # IMPORTANTE: la app y el test corren en el MISMO paso. Los procesos en
 # segundo plano mueren al terminar un paso y los stages no comparten maquina.
 # ============================================================
-
+ 
 trigger:
   branches:
     include:
       - master
       - main
-
+ 
 pr: none
-
+ 
 parameters:
   - name: slaP95Ms
     displayName: 'SLA p95 en ms (800 = verde, 1 = forzar rojo)'
@@ -38,11 +38,15 @@ parameters:
   - name: usarSauce
     displayName: 'Ejecutar tambien en Sauce Labs (requiere SAUCE_USERNAME y SAUCE_ACCESS_KEY)'
     type: boolean
-    default: false
-
+    default: true
+  - name: publicarAcr
+    displayName: 'Publicar la imagen en Azure Container Registry (requiere ACR_LOGIN_SERVER, ACR_USERNAME, ACR_PASSWORD)'
+    type: boolean
+    default: true
+ 
 pool:
   vmImage: 'ubuntu-latest'
-
+ 
 variables:
   NODE_VERSION: '20.x'
   PYTHON_VERSION: '3.11'
@@ -54,7 +58,7 @@ variables:
   TEST_SUITE_ID: '3'
   # El secreto AZURE_DEVOPS_PAT se crea en Pipelines > Edit > Variables
   # (marcado "Keep this value secret"); NO se escribe aqui.
-
+ 
 stages:
   # ──────────────────────────────────────────────────────────
   - stage: Build
@@ -67,16 +71,16 @@ stages:
             displayName: 'Usar Node $(NODE_VERSION)'
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
+ 
           - script: npm install
             displayName: 'npm install (postinstall genera db.json con Faker)'
             workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
-
+ 
           - script: |
               node -e "const d=require('./datos/db.json'); const c=new Set(d.productos.map(p=>p.categoria)); console.log('productos:',d.productos.length,'| categorias:',c.size); if(d.productos.length<20||c.size<4){console.error('Datos insuficientes (min 20 productos y 4 categorias)');process.exit(1)}"
             displayName: 'Validar datos generados (>=20 productos, >=4 categorias)'
             workingDirectory: '$(Build.SourcesDirectory)/$(APP_DIR)'
-
+ 
   # ──────────────────────────────────────────────────────────
   - stage: SmokeTests
     displayName: 'Smoke - la app encendio (GATE 1)'
@@ -88,7 +92,7 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
+ 
           - script: |
               set -e
               cd "$(Build.SourcesDirectory)/$(APP_DIR)"
@@ -100,12 +104,12 @@ stages:
                 sleep 1
               done
               if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
-
+ 
               cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
               # health + catalogo + producto + 404 + filtro + front + crear pedido
               BASE_URL=http://localhost:3000 node smoke-api.js
             displayName: 'Smoke test de la API (GATE 1)'
-
+ 
   # ──────────────────────────────────────────────────────────
   - stage: LoadTest
     displayName: 'Carga - quality gate de rendimiento (GATE 2)'
@@ -117,7 +121,7 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
+ 
           - script: |
               set -e
               cd "$(Build.SourcesDirectory)/$(APP_DIR)"
@@ -129,7 +133,7 @@ stages:
                 sleep 1
               done
               if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
-
+ 
               cd "$(Build.SourcesDirectory)/$(TEST_DIR)"
               echo "SLA aplicado: p95 < ${SLA_P95_MS} ms y error < ${SLA_ERROR_PCT}%"
               # carga-simple.js sale con exit 1 si no cumple el SLA -> este paso queda ROJO
@@ -138,7 +142,7 @@ stages:
             env:
               SLA_P95_MS: '${{ parameters.slaP95Ms }}'
               SLA_ERROR_PCT: '${{ parameters.slaErrorPct }}'
-
+ 
   # ──────────────────────────────────────────────────────────
   # E2E corre EN PARALELO con LoadTest (ambos dependen solo de SmokeTests).
   # Publica JUnit en la pestana Tests y actualiza los Test Cases del plan.
@@ -153,11 +157,11 @@ stages:
           - task: NodeTool@0
             inputs:
               versionSpec: '$(NODE_VERSION)'
-
+ 
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '$(PYTHON_VERSION)'
-
+ 
           - script: |
               set -e
               cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
@@ -165,7 +169,7 @@ stages:
               pip install -r requirements.txt
               python -m playwright install --with-deps chromium
             displayName: 'Instalar dependencias E2E (pip + chromium)'
-
+ 
           # app + pytest en UN SOLO paso: la app en background muere al
           # terminar el paso, asi que debe seguir viva mientras corre pytest.
           - script: |
@@ -179,7 +183,7 @@ stages:
                 sleep 1
               done
               if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
-
+ 
               cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
               mkdir -p resultados
               # exit != 0 si algun escenario falla -> este paso queda ROJO (GATE 3)
@@ -187,7 +191,7 @@ stages:
             displayName: 'E2E: app + pytest (GATE 3)'
             env:
               BASE_URL: 'http://localhost:3000'
-
+ 
           - task: PublishTestResults@2
             displayName: 'Publicar resultados JUnit (pestana Tests)'
             condition: always()
@@ -197,14 +201,14 @@ stages:
               testRunTitle: 'E2E Tienda - chromium'
               mergeTestResults: true
               failTaskOnFailedTests: false
-
+ 
           - task: PublishPipelineArtifact@1
             displayName: 'Guardar resultados como artefacto'
             condition: always()
             inputs:
               targetPath: '$(E2E_DIR)/resultados'
               artifact: 'resultados-e2e'
-
+ 
           # Marca cada Test Case (por su tag @TC<id>) como Passed/Failed en el plan.
           # Si falta el PAT, avisa pero NO rompe el pipeline.
           - script: |
@@ -217,7 +221,7 @@ stages:
               TEST_PLAN_ID: '$(TEST_PLAN_ID)'
               TEST_SUITE_ID: '$(TEST_SUITE_ID)'
               JUNIT_PATH: 'resultados/junit-chromium.xml'
-
+ 
   # ──────────────────────────────────────────────────────────
   # FASE 4: las MISMAS pruebas en un navegador REAL de Sauce Labs.
   # Solo corre si marcas el parametro "usarSauce" al lanzar el pipeline
@@ -242,7 +246,7 @@ stages:
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '$(PYTHON_VERSION)'
-
+ 
           # PASO 1: app + tunel Sauce Connect (ambos en background)
           - script: |
               echo "##### ARRANCAR APP #####"
@@ -255,7 +259,7 @@ stages:
                 sleep 1
               done
               if [ "$APP_OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
-
+ 
               echo "##### DESCARGAR SAUCE CONNECT #####"
               cd "$(Build.SourcesDirectory)/$(E2E_DIR)"
               curl -fsSL -o sc.tar.gz https://saucelabs.com/downloads/sauce-connect/5.2.2/sauce-connect-5.2.2_linux.x86_64.tar.gz
@@ -264,7 +268,7 @@ stages:
               if [ -z "$SC_BIN" ]; then echo "##[error]No encontre el binario de Sauce Connect"; exit 1; fi
               chmod +x "$SC_BIN"
               echo "$SC_BIN" > "$(Build.SourcesDirectory)/sc_bin.txt"
-
+ 
               echo "##### ABRIR TUNEL #####"
               # --proxy-localhost allow: imprescindible. Sin el, el navegador
               # remoto resuelve 'localhost' como SU propia VM y no ve la app.
@@ -288,7 +292,7 @@ stages:
               SAUCE_USERNAME: $(SAUCE_USERNAME)
               SAUCE_ACCESS_KEY: $(SAUCE_ACCESS_KEY)
               SAUCE_TUNNEL: 'tienda-tunnel-$(Build.BuildId)'
-
+ 
           # PASO 2: pytest contra el navegador remoto (app y tunel siguen vivos)
           - script: |
               set -e
@@ -310,14 +314,14 @@ stages:
               SAUCE_TUNNEL: 'tienda-tunnel-$(Build.BuildId)'
               BASE_URL: 'http://localhost:3000'
               BUILD_TAG: 'tienda-e2e-$(Build.BuildId)'
-
+ 
           - script: |
               SC_BIN=$(cat "$(Build.SourcesDirectory)/sc_bin.txt" 2>/dev/null || true)
               [ -n "$SC_BIN" ] && pkill -f "$SC_BIN" || true
               echo "Tunel cerrado (si estaba abierto)."
             displayName: 'Cerrar tunel'
             condition: always()
-
+ 
           - task: PublishTestResults@2
             displayName: 'Publicar resultados JUnit (Sauce)'
             condition: always()
@@ -326,28 +330,63 @@ stages:
               testResultsFiles: '$(E2E_DIR)/resultados/junit-sauce.xml'
               testRunTitle: 'E2E Tienda - Sauce Labs'
               failTaskOnFailedTests: false
-
+ 
           - task: PublishPipelineArtifact@1
             displayName: 'Guardar resultados Sauce'
             condition: always()
             inputs:
               targetPath: '$(E2E_DIR)/resultados'
               artifact: 'resultados-sauce'
-
+ 
   # ──────────────────────────────────────────────────────────
-  # Solo corre si TODOS los gates anteriores pasaron.
-  # En la Fase 5 aqui se publica la imagen en ACR.
+  # FASE 5: "Deploy" = construir la imagen, probarla y (opcional) publicarla
+  # en ACR. Solo corre si TODOS los gates anteriores pasaron.
   - stage: Deploy
-    displayName: 'Deploy (solo si los gates pasan)'
+    displayName: 'Deploy - imagen Docker + ACR (solo si los gates pasan)'
     dependsOn:
       - LoadTest
       - E2E
     condition: succeeded()
     jobs:
-      - job: deploy
-        displayName: 'Desplegar'
+      - job: docker
+        displayName: 'Construir, probar y publicar la imagen'
         steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+ 
+          # La app contenerizada debe responder igual que sin contenedor.
           - script: |
-              echo "Gates en verde: Smoke OK, Carga OK y E2E OK."
-              echo "Aqui iria el despliegue (Fase 5: docker push a ACR / App Service)."
-            displayName: 'Deploy (placeholder)'
+              set -e
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              docker build -t app-tienda:$(Build.BuildId) .
+              docker run -d --name tienda -p 3001:3000 app-tienda:$(Build.BuildId)
+              OK=0
+              for i in $(seq 1 30); do
+                curl -sf http://localhost:3001/api/health > /dev/null && { OK=1; echo ">>> CONTENEDOR RESPONDE"; break; }
+                sleep 1
+              done
+              if [ "$OK" != "1" ]; then echo "##[error]El contenedor no respondio"; docker logs tienda; exit 1; fi
+              curl -s http://localhost:3001/api/health; echo
+              curl -s http://localhost:3001/api/productos | node -e "let b='';process.stdin.on('data',c=>b+=c).on('end',()=>{const p=JSON.parse(b);const c=new Set(p.map(x=>x.categoria));console.log('Contenedor -> productos:',p.length,'| categorias:',c.size);if(p.length<20||c.size<4){console.error('Datos insuficientes en el contenedor');process.exit(1)}})"
+              docker ps --filter name=tienda
+              docker stop tienda
+            displayName: 'Docker: build + run + verificar (healthcheck /api/health)'
+ 
+          # Publicacion en ACR: solo si marcas el parametro publicarAcr.
+          # Usa credenciales de ACR guardadas como variables secretas.
+          - script: |
+              set -e
+              echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_SERVER" -u "$ACR_USERNAME" --password-stdin
+              IMG="$ACR_LOGIN_SERVER/app-tienda"
+              docker tag app-tienda:$(Build.BuildId) "$IMG:$(Build.BuildId)"
+              docker tag app-tienda:$(Build.BuildId) "$IMG:latest"
+              docker push "$IMG:$(Build.BuildId)"
+              docker push "$IMG:latest"
+              echo ">>> Imagen publicada: $IMG:$(Build.BuildId)"
+            displayName: 'Publicar imagen en Azure Container Registry'
+            condition: and(succeeded(), eq('${{ parameters.publicarAcr }}', 'true'))
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              ACR_USERNAME: $(ACR_USERNAME)
+              ACR_PASSWORD: $(ACR_PASSWORD)

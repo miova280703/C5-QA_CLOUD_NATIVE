@@ -18,7 +18,7 @@ COPY package*.json ./
 
 # 2) Instalar dependencias de produccion.
 #    El "postinstall" genera datos/db.json con Faker automaticamente.
-RUN npm install --omit=dev
+RUN npm install --omit=dev --ignore-scripts
 
 # 3) Copiar el resto del proyecto (servidor + front + datos).
 COPY . .

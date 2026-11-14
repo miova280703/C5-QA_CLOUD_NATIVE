@@ -59,6 +59,7 @@ variables:
   # El secreto AZURE_DEVOPS_PAT se crea en Pipelines > Edit > Variables
   # (marcado "Keep this value secret"); NO se escribe aqui.
  
+
 stages:
   # ──────────────────────────────────────────────────────────
   - stage: Build
@@ -238,7 +239,7 @@ stages:
     jobs:
       - job: e2e_sauce
         displayName: 'Pruebas E2E en navegador real (Sauce)'
-        timeoutInMinutes: '30'
+        timeoutInMinutes: 30
         steps:
           - task: NodeTool@0
             inputs:
@@ -339,6 +340,63 @@ stages:
               artifact: 'resultados-sauce'
  
   # ──────────────────────────────────────────────────────────
+  # FASE 5 (contract testing): el consumer GENERA el contrato con Pact y el
+  # provider (la API real) lo VERIFICA. Si la API rompe el contrato, este stage
+  # queda rojo y Deploy no corre.   GATE 5: paso "Provider: verificar contrato".
+  - stage: Contract
+    displayName: 'Contract testing - Pact consumer/provider (GATE 5)'
+    dependsOn: SmokeTests
+    jobs:
+      - job: pact
+        displayName: 'Pact: generar y verificar el contrato'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(PYTHON_VERSION)'
+ 
+          - script: |
+              set -e
+              python -m pip install --upgrade pip
+              pip install -r "$(Build.SourcesDirectory)/pact/consumer/requirements.txt"
+              pip install -r "$(Build.SourcesDirectory)/pact/provider/requirements.txt"
+            displayName: 'Instalar pact-python'
+ 
+          - script: |
+              set -e
+              cd "$(Build.SourcesDirectory)/pact/consumer"
+              pytest -v
+              ls -la ../pacts
+            displayName: 'Consumer: generar contrato (front-tienda -> tienda-api)'
+ 
+          # app + verificacion en UN solo paso (la app en background muere al terminar)
+          - script: |
+              set -e
+              cd "$(Build.SourcesDirectory)/$(APP_DIR)"
+              npm install
+              nohup node servidor/server.js </dev/null > "$(Build.SourcesDirectory)/app.log" 2>&1 &
+              OK=0
+              for i in $(seq 1 20); do
+                curl -sf http://localhost:3000/api/health > /dev/null && { OK=1; echo ">>> APP LISTA"; break; }
+                sleep 1
+              done
+              if [ "$OK" != "1" ]; then echo "##[error]La app no arranco"; cat "$(Build.SourcesDirectory)/app.log"; exit 1; fi
+ 
+              cd "$(Build.SourcesDirectory)/pact/provider"
+              # exit != 0 si la API no cumple el contrato -> paso ROJO (GATE 5)
+              PROVIDER_URL=http://localhost:3000 PACT_FILE=../pacts/front-tienda-tienda-api.json python verificar_provider.py
+            displayName: 'Provider: verificar contrato contra la API real (GATE 5)'
+ 
+          - task: PublishPipelineArtifact@1
+            displayName: 'Guardar contrato Pact'
+            condition: always()
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/pact/pacts'
+              artifact: 'pact-contrato'
+ 
+  # ──────────────────────────────────────────────────────────
   # FASE 5: "Deploy" = construir la imagen, probarla y (opcional) publicarla
   # en ACR. Solo corre si TODOS los gates anteriores pasaron.
   - stage: Deploy
@@ -346,6 +404,7 @@ stages:
     dependsOn:
       - LoadTest
       - E2E
+      - Contract
     condition: succeeded()
     jobs:
       - job: docker

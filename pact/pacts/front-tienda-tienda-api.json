@@ -1,0 +1,60 @@
+{
+  "consumer": {
+    "name": "front-tienda"
+  },
+  "provider": {
+    "name": "tienda-api"
+  },
+  "interactions": [
+    {
+      "description": "una peticion de la lista de productos",
+      "providerState": "existen productos en el catalogo",
+      "request": {
+        "method": "get",
+        "path": "/api/productos"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+        },
+        "body": [
+          {
+            "id": 1,
+            "nombre": "Clava Profesional PX3 THX",
+            "categoria": "clavas",
+            "precio": 485.39,
+            "stock": 56
+          }
+        ],
+        "matchingRules": {
+          "$.body": {
+            "min": 1
+          },
+          "$.body[*].*": {
+            "match": "type"
+          },
+          "$.body[*].id": {
+            "match": "type"
+          },
+          "$.body[*].nombre": {
+            "match": "type"
+          },
+          "$.body[*].categoria": {
+            "match": "type"
+          },
+          "$.body[*].precio": {
+            "match": "type"
+          },
+          "$.body[*].stock": {
+            "match": "type"
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "2.0.0"
+    }
+  }
+}

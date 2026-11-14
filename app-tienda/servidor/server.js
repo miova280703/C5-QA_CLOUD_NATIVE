@@ -83,6 +83,15 @@ app.post('/api/test/reset', (_req, res) => {
   res.json({ ok: true });
 });
 
+// Endpoint de apoyo para Pact (provider states): Pact lo llama antes de cada
+// interaccion para dejar al provider en el estado que declaro el consumer.
+// Los datos ya existen (semilla fija), asi que solo confirmamos el estado.
+app.post('/api/_pact/state', (req, res) => {
+  const { state } = req.body || {};
+  console.log(`[pact] provider state solicitado: ${state}`);
+  res.json({ ok: true, state: state || null });
+});
+
 // Front: cualquier otra ruta devuelve el index (SPA simple)
 app.get('*', (_req, res) => {
   res.sendFile(join(RAIZ, 'public', 'index.html'));

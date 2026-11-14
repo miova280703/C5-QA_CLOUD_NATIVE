@@ -1,0 +1,4 @@
+# Consumer - contract testing con Pact (API clasica Consumer/Provider/Like/EachLike)
+pact-python==2.2.2
+pytest==8.3.3
+requests==2.32.3

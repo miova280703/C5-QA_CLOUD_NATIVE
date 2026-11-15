@@ -1,0 +1,62 @@
+[
+  {
+    "id": "d1",
+    "committed_at": "2026-11-15T00:05:46.767628Z",
+    "deployed_at": "2026-11-15T00:11:19.6835741Z",
+    "failed": false
+  },
+  {
+    "id": "d2",
+    "committed_at": "2026-11-14T22:21:22.4237555Z",
+    "deployed_at": "2026-11-14T22:26:50.7111571Z",
+    "failed": false
+  },
+  {
+    "id": "d3",
+    "committed_at": "2026-11-14T22:12:42.9405971Z",
+    "deployed_at": "2026-11-14T22:18:11.7450307Z",
+    "failed": false
+  },
+  {
+    "id": "d4",
+    "committed_at": "2026-11-14T14:21:41.6222392Z",
+    "deployed_at": "2026-11-14T14:26:20.8270997Z",
+    "failed": false
+  },
+  {
+    "id": "d5",
+    "committed_at": "2026-11-13T00:15:31.0489072Z",
+    "deployed_at": "2026-11-13T00:20:24.0720853Z",
+    "failed": false
+  },
+  {
+    "id": "d6",
+    "committed_at": "2026-11-13T00:07:50.2186642Z",
+    "deployed_at": "2026-11-13T00:10:18.5381768Z",
+    "failed": false
+  },
+  {
+    "id": "d7",
+    "committed_at": "2026-11-12T23:59:37.5665984Z",
+    "deployed_at": "2026-11-13T00:03:07.6975446Z",
+    "failed": false
+  },
+  {
+    "id": "d8",
+    "committed_at": "2026-11-12T21:40:08.0740081Z",
+    "deployed_at": "2026-11-12T21:43:21.254703Z",
+    "failed": false
+  },
+  {
+    "id": "d9",
+    "committed_at": "2026-11-10T03:06:25.5231516Z",
+    "deployed_at": "2026-11-10T03:08:02.2761734Z",
+    "failed": true
+  },
+  {
+    "id": "d10",
+    "committed_at": "2026-11-10T03:01:26.7047945Z",
+    "deployed_at": "2026-11-10T03:03:49.3052935Z",
+    "failed": false
+  }
+]
